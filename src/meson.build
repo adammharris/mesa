@@ -6,6 +6,10 @@ mesa_python_path = [
   join_paths(dir_source_root, 'src/vulkan/util/'),
 ]
 
+if host_machine.system() == 'redox'
+  subdir('redox/drm')
+endif
+
 subdir('gtest')
 subdir('c11/impl')
 subdir('android_stub')

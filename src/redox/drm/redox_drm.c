@@ -12,6 +12,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -62,6 +63,8 @@ default_transport(int fd, uint64_t nr, void *payload, size_t len)
 }
 #endif
 
+static const char *card_path(void);
+
 static redox_drm_transport_fn transport = default_transport;
 
 void
@@ -83,10 +86,7 @@ call_retry(int fd, uint64_t nr, void *payload, size_t len)
 int
 redox_drm_open(void)
 {
-   const char *path = getenv("REDOX_DRM_CARD");
-   if (!path || !path[0])
-      path = REDOX_DRM_DEFAULT_CARD;
-   return open(path, O_RDWR | O_CLOEXEC);
+   return open(card_path(), O_RDWR | O_CLOEXEC);
 }
 
 /* ---------------------------------------------------------------- marshalling */
@@ -471,29 +471,70 @@ char *
 drmGetDeviceNameFromFd2(int fd)
 {
    (void)fd;
-   return strdup(REDOX_DRM_DEFAULT_CARD);
+   return strdup(card_path());
 }
 
 char *
 drmGetRenderDeviceNameFromFd(int fd)
 {
    (void)fd;
-   return strdup(REDOX_DRM_DEFAULT_CARD);
+   return strdup(card_path());
 }
 
 char *
 drmGetPrimaryDeviceNameFromFd(int fd)
 {
    (void)fd;
-   return strdup(REDOX_DRM_DEFAULT_CARD);
+   return strdup(card_path());
+}
+
+/* One device: the daemon's scheme, as a platform device with a render node only. */
+static const char *
+card_path(void)
+{
+   const char *path = getenv("REDOX_DRM_CARD");
+   return path && path[0] ? path : REDOX_DRM_DEFAULT_CARD;
+}
+
+static drmDevicePtr
+new_device(void)
+{
+   /* One allocation, as libdrm's: the device, its node table and strings, bus and
+    * device records. drmFreeDevice() frees it whole. */
+   struct block {
+      drmDevice device;
+      char *nodes[DRM_NODE_MAX];
+      char node_names[DRM_NODE_MAX][256];
+      drmPlatformBusInfo bus;
+      drmPlatformDeviceInfo info;
+      char *compatible[2];
+      char compatible0[32];
+   } *b = calloc(1, sizeof(*b));
+   if (!b)
+      return NULL;
+
+   for (unsigned i = 0; i < DRM_NODE_MAX; i++)
+      b->nodes[i] = b->node_names[i];
+   snprintf(b->node_names[DRM_NODE_RENDER], sizeof(b->node_names[0]), "%s", card_path());
+   snprintf(b->bus.fullname, sizeof(b->bus.fullname), "gpu.agx");
+   snprintf(b->compatible0, sizeof(b->compatible0), "apple,agx");
+   b->compatible[0] = b->compatible0;
+   b->info.compatible = b->compatible;
+
+   b->device.nodes = b->nodes;
+   b->device.available_nodes = 1 << DRM_NODE_RENDER;
+   b->device.bustype = DRM_BUS_PLATFORM;
+   b->device.businfo.platform = &b->bus;
+   b->device.deviceinfo.platform = &b->info;
+   return &b->device;
 }
 
 int
 drmGetDevice2(int fd, uint32_t flags, drmDevicePtr *device)
 {
    (void)fd; (void)flags;
-   *device = NULL;
-   return -ENODEV;
+   *device = new_device();
+   return *device ? 0 : -ENOMEM;
 }
 
 int
@@ -510,11 +551,17 @@ drmGetDeviceFromDevId(dev_t dev_id, uint32_t flags, drmDevicePtr *device)
    return -ENODEV;
 }
 
+/* As libdrm: with no array, the number of devices; else how many were stored. */
 int
 drmGetDevices2(uint32_t flags, drmDevicePtr devices[], int max_devices)
 {
-   (void)flags; (void)devices; (void)max_devices;
-   return 0;
+   (void)flags;
+   if (!devices)
+      return 1;
+   if (max_devices < 1)
+      return 0;
+   devices[0] = new_device();
+   return devices[0] ? 1 : -ENOMEM;
 }
 
 int
@@ -526,20 +573,23 @@ drmGetDevices(drmDevicePtr devices[], int max_devices)
 void
 drmFreeDevice(drmDevicePtr *device)
 {
-   if (device)
-      *device = NULL;
+   if (!device)
+      return;
+   free(*device);
+   *device = NULL;
 }
 
 void
 drmFreeDevices(drmDevicePtr devices[], int count)
 {
-   (void)devices; (void)count;
+   for (int i = 0; devices && i < count; i++)
+      drmFreeDevice(&devices[i]);
 }
 
 int
 drmDevicesEqual(drmDevicePtr a, drmDevicePtr b)
 {
-   return a == b;
+   return a && b && !strcmp(a->nodes[DRM_NODE_RENDER], b->nodes[DRM_NODE_RENDER]);
 }
 
 /* ---------------------------------------------- PRIME, sync files: not in v1 */

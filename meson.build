@@ -811,7 +811,8 @@ allow_fallback_for_libdrm = get_option('allow-fallback-for').contains('libdrm')
 with_gallium_drisw_kms = false
 if host_machine.system() == 'redox'
   # Redox has no DRM. src/redox/drm is a libdrm stand-in with the same header
-  # (xf86drm.h) whose calls go to the GPU daemon's scheme (libredox_drm).
+  # (xf86drm.h) whose calls go to the GPU daemon's scheme. Its library,
+  # libredox_drm, joins this dependency in src/meson.build (src/redox/drm).
   dep_libdrm = declare_dependency(
     include_directories : include_directories('src/redox/drm', 'include/drm-uapi'),
   )

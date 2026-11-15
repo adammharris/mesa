@@ -3,13 +3,7 @@
 #
 # Redox: the libdrm stand-in that talks to the GPU daemon's scheme, and test programs.
 
-libredox_drm = static_library(
-  'redox_drm',
-  files('drm/redox_drm.c'),
-  include_directories : [include_directories('drm'), inc_include, include_directories('../../include/drm-uapi')],
-  gnu_symbol_visibility : 'hidden',
-  build_by_default : false,
-)
+# libredox_drm is built in drm/ (src/meson.build enters it first: it is part of dep_libdrm).
 
 if with_gallium_asahi
   # Shader -> AGX machine code, printed; compared with a Linux build's output.
