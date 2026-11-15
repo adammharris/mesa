@@ -10,6 +10,7 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include "util/detect_os.h"
 #include <xf86drm.h>
 #include <string.h>
 
@@ -129,6 +130,35 @@ agx_fence_create(struct agx_context *ctx)
    /* A failed submission must not export an earlier rendering success. */
    if (ctx->any_faults)
       return NULL;
+
+#if DETECT_OS_REDOX
+   /* Redox has no sync files: the GPU daemon's sync objects are private to the
+    * client and are never file descriptors. Snapshot the last rendering fence
+    * by copying it into a new sync object (DRM_IOCTL_SYNCOBJ_TRANSFER), which
+    * is the "another syncobj" the comment below wishes for. There is no
+    * server wait to merge: in_sync_fd can only come from a fence fd. */
+   {
+      struct pipe_fence_handle *f = calloc(1, sizeof(*f));
+      if (!f)
+         return NULL;
+
+      if (drmSyncobjCreate(dev->fd, 0, &f->syncobj)) {
+         agx_msg("create syncobj failed\n");
+         free(f);
+         return NULL;
+      }
+
+      if (drmSyncobjTransfer(dev->fd, f->syncobj, 0, ctx->syncobj, 0, 0)) {
+         agx_msg("fence transfer failed\n");
+         drmSyncobjDestroy(dev->fd, f->syncobj);
+         free(f);
+         return NULL;
+      }
+
+      pipe_reference_init(&f->reference, 1);
+      return f;
+   }
+#endif
 
    /* Snapshot the last rendering out fence. We'd rather have another
     * syncobj instead of a sync file, but this is all we get.

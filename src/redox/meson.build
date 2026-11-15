@@ -35,6 +35,26 @@ if with_gallium_asahi
                     idep_libagx_shaders_h],
     build_by_default : false,
   )
+
+  # The gallium driver without a frontend: clear + triangle on an offscreen target.
+  executable(
+    'agxtri_test',
+    files('tests/agxtri_test.c'),
+    include_directories : [
+      inc_gallium_aux, inc_gallium, inc_include, inc_src, inc_asahi, inc_virtio_gpu,
+      inc_virtio_vdrm, include_directories('drm', '../gallium/drivers/asahi'),
+    ],
+    c_args : ['-Wno-c2x-extensions'],
+    link_with : [
+      libasahi, libasahiwinsys, libasahi_compiler, libasahi_lib, libasahi_layout,
+      libasahi_decode, libgallium, libgalliumvl_stub, libredox_drm,
+    ],
+    dependencies : [
+      idep_nir, idep_mesautil, idep_agx_pack, dep_libdrm, idep_libagx,
+      idep_libagx_shaders_h, idep_xmlconfig,
+    ],
+    build_by_default : false,
+  )
 endif
 
 # The marshalling alone (no daemon): also builds on Linux by hand, see the file.
