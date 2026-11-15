@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "xf86drm.h"
@@ -77,9 +78,25 @@ static ssize_t
 call_retry(int fd, uint64_t nr, void *payload, size_t len)
 {
    ssize_t r;
+   /* REDOX_DRM_TRACE=1: every call with its duration, on stderr. */
+   static int trace = -1;
+   if (trace < 0) {
+      const char *t = getenv("REDOX_DRM_TRACE");
+      trace = t && t[0] && t[0] != '0';
+   }
+   struct timespec t0, t1;
+   if (trace)
+      clock_gettime(CLOCK_MONOTONIC, &t0);
    do {
       r = transport(fd, nr, payload, len);
    } while (r == -EINTR || r == -EAGAIN);
+   if (trace) {
+      clock_gettime(CLOCK_MONOTONIC, &t1);
+      fprintf(stderr, "redox-drm: call %#04x len %zu -> %zd  %.3f ms (at %ld.%06ld)\n",
+              (unsigned)nr, len, r,
+              (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6,
+              (long)t1.tv_sec, t1.tv_nsec / 1000);
+   }
    return r;
 }
 

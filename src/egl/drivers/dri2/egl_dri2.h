@@ -385,7 +385,10 @@ struct dri2_egl_surface {
    uint32_t gralloc_usage;
 #endif
 
-   /* surfaceless and device */
+   /* orbital (Redox): the window; NULL for a pbuffer */
+   struct orbital_surface *orbital;
+
+   /* surfaceless, device and orbital */
    struct dri_image *front;
    enum pipe_format visual;
 
@@ -572,6 +575,17 @@ dri2_initialize_android(_EGLDisplay *disp)
 
 EGLBoolean
 dri2_initialize_surfaceless(_EGLDisplay *disp);
+
+#ifdef HAVE_ORBITAL_PLATFORM
+EGLBoolean
+dri2_initialize_orbital(_EGLDisplay *disp);
+#else
+static inline EGLBoolean
+dri2_initialize_orbital(_EGLDisplay *disp)
+{
+   return _eglError(EGL_NOT_INITIALIZED, "Orbital platform not built");
+}
+#endif
 
 EGLBoolean
 dri2_initialize_device(_EGLDisplay *disp);

@@ -934,6 +934,9 @@ dri2_initialize(_EGLDisplay *disp)
    case _EGL_PLATFORM_ANDROID:
       ret = dri2_initialize_android(disp);
       break;
+   case _EGL_PLATFORM_ORBITAL:
+      ret = dri2_initialize_orbital(disp);
+      break;
    default:
       UNREACHABLE("Callers ensure we cannot get here.");
       return EGL_FALSE;
@@ -1026,6 +1029,8 @@ dri2_display_destroy(_EGLDisplay *disp)
    case _EGL_PLATFORM_SURFACELESS:
       break;
    case _EGL_PLATFORM_DEVICE:
+      break;
+   case _EGL_PLATFORM_ORBITAL:
       break;
    default:
       UNREACHABLE("Platform teardown is not properly hooked.");

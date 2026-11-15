@@ -90,6 +90,11 @@ if with_dri
     'drivers/dri2/platform_surfaceless.c',
   )
 
+  if host_machine.system() == 'redox'
+    files_egl += files('drivers/dri2/platform_orbital.c')
+    c_args_for_egl += '-DHAVE_ORBITAL_PLATFORM'
+  endif
+
   if with_platform_x11
     files_egl += files('drivers/dri2/platform_x11.c')
     incs_for_egl += inc_loader_x11

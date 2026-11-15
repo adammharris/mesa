@@ -612,6 +612,13 @@ if with_egl
       error('`-D egl-native-platform=...` must be one of: ' + ', '.join(_undetectable_platforms_enabled))
     endif
   endif
+
+  # Redox: Orbital, its window system, is the native platform
+  # (src/egl/drivers/dri2/platform_orbital.c; src/egl/meson.build defines
+  # HAVE_ORBITAL_PLATFORM for libEGL).
+  if host_machine.system() == 'redox' and get_option('egl-native-platform') == 'auto'
+    egl_native_platform = 'orbital'
+  endif
 endif
 
 if 'x11' in _platforms
