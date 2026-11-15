@@ -38,9 +38,18 @@
  * compositor will need on top: the token handed over through the window, and a
  * second buffer so the one being shown is not the one being drawn.
  *
+ * Presenting without a copy (scheme 1.1 and an Orbital that composes with the GPU,
+ * redox-bridge/gpu-ref/logs/ORBITAL-GPU-DESIGN.md): the surface has two exported back
+ * buffers; a swap waits for the frame, writes "B,<token>,<w>,<h>,<stride>,0,0" to the
+ * window and fsyncs, and the next frame is drawn into the other buffer. Orbital reads a
+ * buffer only until the next "B" write returns. When Orbital refuses (EINVAL: it
+ * composes on the CPU) or the export fails, the surface copies as above, for good.
+ * Destroying the surface writes "B,0" (the window shows its own image again).
+ *
  * Environment:
  *   EGL_ORBITAL_TIMING=<n>   print the average time of each part of eglSwapBuffers
  *                            to stderr every <n> frames (and when the surface goes).
+ *   EGL_ORBITAL_PRESENT=0    never hand buffers to Orbital (always copy).
  *   EGL_ORBITAL_SHARE=1      export the back buffer and present from the buffer fd.
  */
 
@@ -82,6 +91,14 @@ struct orbital_surface {
    size_t share_size;
    uint64_t share_token;
    uint64_t share_frames;
+
+   /* Presenting by handing the buffer to Orbital (EGL_ORBITAL_PRESENT, on unless 0): two
+    * exported back buffers; `back` is drawn into, `spare` is the one Orbital shows. */
+   bool present, present_failed;
+   struct dri_image *spare;
+   int spare_fd;
+   uint64_t spare_token;
+   uint64_t present_frames;
 
    /* EGL_ORBITAL_TIMING */
    unsigned timing_every, timing_frames;
@@ -181,6 +198,13 @@ orbital_timing_report(struct orbital_surface *o)
 static void
 orbital_drop_back(struct orbital_surface *o)
 {
+   if (o->spare)
+      dri2_destroy_image(o->spare);
+   o->spare = NULL;
+   if (o->spare_fd >= 0)
+      close(o->spare_fd);
+   o->spare_fd = -1;
+   o->spare_token = 0;
    if (o->share_map)
       munmap((void *)o->share_map, o->share_size);
    o->share_map = NULL;
@@ -249,6 +273,27 @@ fail:
    o->share_token = 0;
 }
 
+/* EGL_ORBITAL_PRESENT: exports the new back buffer (its token goes to Orbital at a swap).
+ * A failure leaves the surface on the copy path, for good.
+ */
+static void
+orbital_export_back(struct orbital_surface *o)
+{
+   int fd = -1;
+   errno = 0;
+   if (dri2_query_image(o->back, __DRI_IMAGE_ATTRIB_FD, &fd) && fd >= 0 &&
+       !redox_drm_buffer_token(fd, &o->share_token)) {
+      o->share_fd = fd;
+      return;
+   }
+   if (fd >= 0)
+      close(fd);
+   o->share_token = 0;
+   o->present_failed = true;
+   _eglLog(_EGL_DEBUG, "orbital: the back buffer cannot be exported (%s): presenting by copy",
+           errno ? strerror(errno) : "no handle");
+}
+
 static int
 orbital_image_get_buffers(struct dri_drawable *driDrawable, unsigned int format,
                           uint32_t *stamp, void *loaderPrivate,
@@ -292,6 +337,8 @@ orbital_image_get_buffers(struct dri_drawable *driDrawable, unsigned int format,
             return 0;
          if (o->share && !o->share_failed)
             orbital_share_back(o);
+         else if (o->present && !o->present_failed)
+            orbital_export_back(o);
       }
       buffers->image_mask |= __DRI_IMAGE_BUFFER_BACK;
       buffers->back = o->back;
@@ -356,6 +403,8 @@ orbital_create_surface(_EGLDisplay *disp, EGLint type, _EGLConfig *conf,
       o->fd = (int)(intptr_t)native_window;
       o->share_fd = -1;
       o->share = debug_get_bool_option("EGL_ORBITAL_SHARE", false);
+      o->spare_fd = -1;
+      o->present = !o->share && debug_get_bool_option("EGL_ORBITAL_PRESENT", true);
       o->win_w = o->win_h = -1;
       if (!orbital_window_size(o->fd, &o->win_w, &o->win_h)) {
          free(o);
@@ -408,6 +457,9 @@ orbital_destroy_surface(_EGLDisplay *disp, _EGLSurface *surf)
    struct dri2_egl_surface *dri2_surf = dri2_egl_surface(surf);
    struct orbital_surface *o = dri2_surf->orbital;
 
+   /* The window shows its own image again (Orbital lets the buffers go). */
+   if (o && o->present_frames && !o->present_failed)
+      (void)!write(o->fd, "B,0", 3);
    orbital_free_images(dri2_surf);
    driDestroyDrawable(dri2_surf->dri_drawable);
 
@@ -452,6 +504,44 @@ orbital_swap_buffers(_EGLDisplay *disp, _EGLSurface *surf)
    t2 = os_time_get_nano();
 
    t3 = t4 = t2;
+   if (o->back && o->map && ctx && o->present && !o->present_failed && o->share_token) {
+      /* Hand the buffer to Orbital: wait for the frame (the scheme shares no fences),
+       * name it in the window, sync. Orbital then reads it with the GPU; when the write
+       * of the next "B" returns, it reads this one no more (it draws synchronously), so
+       * with two buffers the next frame never waits. Refused (Orbital composes on the
+       * CPU, or does not know "B"): the copy path, for good.
+       */
+      struct dri_context *dri_ctx = dri2_egl_context(ctx)->dri_context;
+      int stride = 0;
+      void *transfer = NULL;
+      if (dri2_map_image(dri_ctx, o->back, 0, 0, 1, 1, __DRI_IMAGE_TRANSFER_READ, &stride, &transfer))
+         dri2_unmap_image(dri_ctx, o->back, transfer);
+      dri2_query_image(o->back, __DRI_IMAGE_ATTRIB_STRIDE, &stride);
+      t3 = os_time_get_nano();
+      char cmd[96];
+      int n = snprintf(cmd, sizeof(cmd), "B,%016llx,%d,%d,%d,0,0", (unsigned long long)o->share_token,
+                       dri2_surf->base.Width, dri2_surf->base.Height, stride);
+      if (write(o->fd, cmd, n) == n) {
+         t4 = os_time_get_nano();
+         fsync(o->fd);
+         o->present_frames++;
+         /* The next frame goes into the other buffer. */
+         struct dri_image *img = o->back;
+         int fd = o->share_fd;
+         uint64_t token = o->share_token;
+         o->back = o->spare;
+         o->share_fd = o->spare_fd;
+         o->share_token = o->spare_token;
+         o->spare = img;
+         o->spare_fd = fd;
+         o->spare_token = token;
+         if (dri2_surf->dri_drawable)
+            dri_invalidate_drawable(dri2_surf->dri_drawable);
+         goto presented;
+      }
+      o->present_failed = true;
+      fprintf(stderr, "egl-orbital: Orbital takes no buffers (%s): presenting by copy\n", strerror(errno));
+   }
    if (o->back && o->map && ctx) {
       struct dri_context *dri_ctx = dri2_egl_context(ctx)->dri_context;
       int w = MIN2(dri2_surf->base.Width, o->win_w);
@@ -487,6 +577,7 @@ orbital_swap_buffers(_EGLDisplay *disp, _EGLSurface *surf)
       t4 = os_time_get_nano();
       fsync(o->fd);
    }
+presented:
    t5 = os_time_get_nano();
 
    /* A new size takes effect with the next frame. */
