@@ -402,17 +402,45 @@ main(void)
       CHECK(rec.calls == 0);
    }
 
-   /* Not in version 1: refused without a call. */
+   /* Sync files: not in the scheme, refused without a call. */
    reset();
+   {
+      int fd = -1;
+      errno = 0;
+      CHECK(drmSyncobjExportSyncFile(5, 1, &fd) == -1);
+      CHECK(drmSyncobjImportSyncFile(5, 1, 3) == -1);
+      CHECK(rec.calls == 0);
+   }
+
+   /* PRIME by token (scheme version 1.1, section 7): export is call 0x2d with the
+    * 32-byte record, flags as Linux's numbers; a version 1.0 daemon's EOPNOTSUPP
+    * comes back as errno and no buffer fd is opened. Import of a descriptor that
+    * is not a buffer fd fails before any call. */
+   reset();
+   rec.result = -EOPNOTSUPP;
    {
       int fd = -1;
       uint32_t h;
       errno = 0;
-      CHECK(drmPrimeHandleToFD(5, 1, 0, &fd) == -1 && errno == EOPNOTSUPP);
-      CHECK(drmPrimeFDToHandle(5, 3, &h) == -1);
-      CHECK(drmSyncobjExportSyncFile(5, 1, &fd) == -1);
-      CHECK(drmSyncobjImportSyncFile(5, 1, 3) == -1);
-      CHECK(rec.calls == 0);
+      CHECK(drmPrimeHandleToFD(5, 7, DRM_CLOEXEC | DRM_RDWR, &fd) == -1 && errno == EOPNOTSUPP);
+      CHECK(fd == -1);
+      CHECK(rec.calls == 1 && rec.fd == 5 && rec.nr == 0x2d && rec.len == 32);
+      CHECK(rd32(0) == 7 && rd32(4) == (0x80000 | 0x2) && rd32(8) == 0xffffffff);
+      CHECK(rd32(12) == 0 && rd64(16) == 0 && rd64(24) == 0);
+      CHECK(drmPrimeHandleToFD(5, 7, 0x4, &fd) == -1 && errno == EINVAL);
+      CHECK(drmPrimeFDToHandle(5, 0, &h) == -1);
+      CHECK(rec.calls == 1);
+   }
+
+   /* GET_CAP: the two syncobj answers are local, anything else asks (0x0c). */
+   reset();
+   {
+      uint64_t v = 0;
+      CHECK(drmGetCap(5, DRM_CAP_SYNCOBJ, &v) == 0 && v == 1 && rec.calls == 0);
+      rec.result = -EOPNOTSUPP;
+      errno = 0;
+      CHECK(drmGetCap(5, DRM_CAP_PRIME, &v) == -1 && errno == EOPNOTSUPP);
+      CHECK(rec.calls == 1 && rec.nr == 0x0c && rec.len == 16 && rd64(0) == DRM_CAP_PRIME);
    }
 
    /* Absurd counts never become an allocation. */
