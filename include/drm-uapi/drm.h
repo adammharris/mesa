@@ -41,6 +41,36 @@
 #include <asm/ioctl.h>
 typedef unsigned int drm_handle_t;
 
+#elif defined(__redox__)
+
+/* Redox: no kernel DRM. The same types as Linux (64-bit ones are long long, so printf
+ * formats written for Linux hold), relibc's _IOC encoding (which is Linux's), plus the
+ * decoding macros relibc lacks. src/redox/drm carries the requests to the GPU daemon. */
+#include <stdint.h>
+#include <sys/types.h>
+#include <sys/ioctl.h>
+typedef signed char        __s8;
+typedef unsigned char      __u8;
+typedef short              __s16;
+typedef unsigned short     __u16;
+typedef int                __s32;
+typedef unsigned int       __u32;
+typedef long long          __s64;
+typedef unsigned long long __u64;
+typedef size_t   __kernel_size_t;
+typedef unsigned int drm_handle_t;
+#ifndef _IOC_NR
+#define _IOC_NR(nr)   ((nr) & 0xff)
+#define _IOC_TYPE(nr) (((nr) >> 8) & 0xff)
+#define _IOC_SIZE(nr) (((nr) >> 16) & 0x3fff)
+#define _IOC_DIR(nr)  (((nr) >> 30) & 3)
+#endif
+#ifndef IOC_OUT
+#define IOC_IN    (_IOC_WRITE << 30)
+#define IOC_OUT   (_IOC_READ << 30)
+#define IOC_INOUT ((_IOC_WRITE | _IOC_READ) << 30)
+#endif
+
 #else /* One of the BSDs or GNU */
 
 #include <stdint.h>

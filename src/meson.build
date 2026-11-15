@@ -191,3 +191,7 @@ devenv.prepend(
 )
 
 subdir('tool')
+
+if host_machine.system() == 'redox'
+  subdir('redox')
+endif

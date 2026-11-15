@@ -63,6 +63,17 @@ u_memstream_open(struct u_memstream *mem, char **bufp, size_t *sizep)
    }
 
    return success;
+#elif defined(__redox__)
+   /* relibc has no open_memstream() */
+   FILE *const f = tmpfile();
+   if (f) {
+      *bufp = NULL;
+      *sizep = 0;
+      mem->bufp = bufp;
+      mem->sizep = sizep;
+   }
+   mem->f = f;
+   return f != NULL;
 #else
    FILE *const f = open_memstream(bufp, sizep);
    mem->f = f;
@@ -70,7 +81,7 @@ u_memstream_open(struct u_memstream *mem, char **bufp, size_t *sizep)
 #endif
 }
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__redox__)
 static void
 u_memstream_update_buffer(struct u_memstream *mem)
 {
@@ -94,8 +105,10 @@ u_memstream_close(struct u_memstream *mem)
 {
    FILE *const f = mem->f;
 
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__redox__)
    u_memstream_update_buffer(mem);
+#endif
+#ifdef _WIN32
    remove(mem->temp);
 #endif
 
@@ -105,7 +118,7 @@ u_memstream_close(struct u_memstream *mem)
 int
 u_memstream_flush(struct u_memstream *mem)
 {
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__redox__)
    return fflush(mem->f);
 #else
    u_memstream_update_buffer(mem);

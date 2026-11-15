@@ -24,6 +24,10 @@
 
 #include <linux/types.h>
 
+#elif defined(__redox__)
+
+#include "drm.h" /* the __u32 family, as Linux's */
+
 #else /* One of the BSDs */
 
 #include <stdint.h>

@@ -91,6 +91,11 @@
 #define DETECT_OS_POSIX 1
 #endif
 
+#if defined(__redox__)
+#define DETECT_OS_REDOX 1
+#define DETECT_OS_POSIX 1
+#endif
+
 
 /*
  * Make sure DETECT_OS_* are always defined, so that they can be used with #if
@@ -124,6 +129,9 @@
 #endif
 #ifndef DETECT_OS_LINUX
 #define DETECT_OS_LINUX 0
+#endif
+#ifndef DETECT_OS_REDOX
+#define DETECT_OS_REDOX 0
 #endif
 #ifndef DETECT_OS_NETBSD
 #define DETECT_OS_NETBSD 0

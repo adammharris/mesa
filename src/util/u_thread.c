@@ -114,6 +114,9 @@ void u_thread_setname( const char *name )
    pthread_setname_np(name);
 #elif DETECT_OS_HAIKU
    rename_thread(find_thread(NULL), name);
+#elif DETECT_OS_REDOX
+   /* relibc has no pthread_setname_np() */
+   (void)name;
 #else
 #warning Not sure how to call pthread_setname_np
 #endif

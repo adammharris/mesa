@@ -158,7 +158,7 @@ pre_args += '-DHAVE_OPENGL_ES_2=@0@'.format(with_gles2.to_int())
 
 with_any_opengl = with_opengl or with_gles1 or with_gles2
 
-system_has_kms_drm = ['openbsd', 'netbsd', 'freebsd', 'gnu/kfreebsd', 'dragonfly', 'linux', 'sunos', 'android', 'managarm'].contains(host_machine.system())
+system_has_kms_drm = ['openbsd', 'netbsd', 'freebsd', 'gnu/kfreebsd', 'dragonfly', 'linux', 'sunos', 'android', 'managarm', 'redox'].contains(host_machine.system())
 
 gallium_drivers = get_option('gallium-drivers')
 if gallium_drivers.contains('auto')
@@ -809,7 +809,13 @@ endif
 allow_fallback_for_libdrm = get_option('allow-fallback-for').contains('libdrm')
 
 with_gallium_drisw_kms = false
-if system_has_kms_drm
+if host_machine.system() == 'redox'
+  # Redox has no DRM. src/redox/drm is a libdrm stand-in with the same header
+  # (xf86drm.h) whose calls go to the GPU daemon's scheme (libredox_drm).
+  dep_libdrm = declare_dependency(
+    include_directories : include_directories('src/redox/drm', 'include/drm-uapi'),
+  )
+elif system_has_kms_drm
   dep_libdrm = dependency(
     'libdrm', version : '>=' + _drm_ver,
     required : with_dri2 or with_dri or with_gbm,
@@ -1223,6 +1229,16 @@ if has_yaml.returncode() != 0
   error('Python (3.x) yaml module (PyYAML) required to build mesa.')
 endif
 
+if host_machine.system() == 'redox'
+  # relibc's <stdlib.h> does not declare alloca() as glibc's and musl's do under
+  # _GNU_SOURCE, and /usr/include/stdatomic.h there is GCC's, which clang cannot use
+  # (src/redox/include/stdatomic.h says why).
+  pre_args += [
+    '-include', 'alloca.h',
+    '-I' + join_paths(meson.project_source_root(), 'src/redox/include'),
+  ]
+endif
+
 # Support systems without ETIME (e.g. FreeBSD)
 if cc.get_define('ETIME', prefix : '#include <errno.h>') == ''
   pre_args += '-DETIME=ETIMEDOUT'
@@ -1325,7 +1341,7 @@ if cc.has_function('mallinfo2')
 endif
 
 # TODO: this is very incomplete
-if ['linux', 'cygwin', 'gnu', 'freebsd', 'gnu/kfreebsd', 'haiku', 'android', 'managarm'].contains(host_machine.system())
+if ['linux', 'cygwin', 'gnu', 'freebsd', 'gnu/kfreebsd', 'haiku', 'android', 'managarm', 'redox'].contains(host_machine.system())
   pre_args += '-D_GNU_SOURCE'
 elif host_machine.system() == 'sunos'
   pre_args += '-D__EXTENSIONS__'

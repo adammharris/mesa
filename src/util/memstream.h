@@ -46,9 +46,12 @@ extern "C" {
 struct u_memstream
 {
    FILE *f;
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__redox__)
+   /* No open_memstream(): a temporary file, read back on flush and close. */
    char **bufp;
    size_t *sizep;
+#endif
+#ifdef _WIN32
    char temp[PATH_MAX];
 #endif
 };
