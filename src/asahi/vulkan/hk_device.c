@@ -430,7 +430,7 @@ hk_init_vm_status_mirror(struct hk_device *dev)
       .pointer = (uintptr_t)&mirror,
       .size = sizeof(mirror),
    };
-   if (drmIoctl(dev->dev.fd, DRM_IOCTL_ASAHI_GET_PARAMS, &query)) {
+   if (dev->dev.ops.simple_ioctl(&dev->dev, DRM_IOCTL_ASAHI_GET_PARAMS, &query)) {
       agx_bo_unreference(&dev->dev, bo);
       return;
    }
@@ -512,7 +512,7 @@ hk_check_status(struct vk_device *device)
       };
       /* A DRM syncobj can signal an error fence successfully. The kernel
        * publishes this sticky VM error before signaling such a fence. */
-      if (drmIoctl(dev->dev.fd, DRM_IOCTL_ASAHI_GET_PARAMS, &query))
+      if (dev->dev.ops.simple_ioctl(&dev->dev, DRM_IOCTL_ASAHI_GET_PARAMS, &query))
          return vk_device_set_lost(&dev->vk, "VM status query failed: %m");
       if (status.error)
          return vk_device_set_lost(&dev->vk, "GPU VM %u failed: %s",

@@ -5,7 +5,9 @@
 
 #include "agx_device_virtio.h"
 
+#include <errno.h>
 #include <inttypes.h>
+#include <stdlib.h>
 #include <sys/mman.h>
 
 #include "drm-uapi/virtgpu_drm.h"
@@ -224,6 +226,42 @@ agx_virtio_get_params(struct agx_device *dev, void *buf, size_t size)
 
    memcpy(buf, &rsp->payload, size);
    return size;
+}
+
+int
+agx_virtio_get_params_area(struct agx_device *dev,
+                           struct drm_asahi_get_params *params)
+{
+   struct vdrm_device *vdrm = dev->vdrm;
+   size_t size = params->size;
+   void *area = (void *)(uintptr_t)params->pointer;
+   size_t req_len = sizeof(struct asahi_ccmd_get_params_req) + ((size + 7) & ~(size_t)7);
+   uint8_t *buf = calloc(1, req_len);
+   if (!buf) {
+      errno = ENOMEM;
+      return -1;
+   }
+
+   struct asahi_ccmd_get_params_req *req = (void *)buf;
+   req->hdr = ASAHI_CCMD(GET_PARAMS, req_len);
+   req->params = *params;
+   req->params.pointer = 0;
+   memcpy(buf + sizeof(*req), area, size);
+
+   struct asahi_ccmd_get_params_rsp *rsp = vdrm_alloc_rsp(
+      vdrm, &req->hdr, sizeof(struct asahi_ccmd_get_params_rsp) + size);
+
+   int ret = vdrm_send_req(vdrm, &req->hdr, true);
+   free(buf);
+   if (!ret && rsp->ret)
+      ret = rsp->ret;
+   if (ret) {
+      errno = ret < 0 ? -ret : EIO;
+      return -1;
+   }
+
+   memcpy(area, &rsp->payload, size);
+   return 0;
 }
 
 static int

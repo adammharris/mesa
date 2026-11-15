@@ -52,6 +52,12 @@
 int
 asahi_simple_ioctl(struct agx_device *dev, unsigned cmd, void *req)
 {
+   /* GET_PARAMS groups that read an area (VM status, its mirror) cannot go
+    * through the virtio-gpu kernel driver as a DRM ioctl: under virtio they
+    * travel as the GET_PARAMS ccmd with the area appended.
+    */
+   if (dev->is_virtio && cmd == DRM_IOCTL_ASAHI_GET_PARAMS)
+      return agx_virtio_get_params_area(dev, req);
    if (dev->is_virtio)
       return agx_virtio_simple_ioctl(dev, cmd, req);
    return drmIoctl(dev->fd, cmd, req);
@@ -191,7 +197,7 @@ agx_drm_vm_status(struct agx_device *dev, int32_t *error)
       .size = sizeof(status),
    };
 
-   if (drmIoctl(dev->fd, DRM_IOCTL_ASAHI_GET_PARAMS, &params))
+   if (asahi_simple_ioctl(dev, DRM_IOCTL_ASAHI_GET_PARAMS, &params))
       return false;
 
    *error = status.error;
