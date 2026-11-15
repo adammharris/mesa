@@ -630,6 +630,20 @@ agx_bo_make_shared(struct agx_device *dev, struct agx_bo *bo)
     * for implicit sync.
     */
    uint64_t writer = p_atomic_read_relaxed(&bo->writer);
+#if DETECT_OS_REDOX
+   /* Redox: no sync files and no fence travels with a shared buffer (the GPU
+    * daemon's scheme, section 7.6: the producer waits for its job before the
+    * consumer reads). So the pending writer is waited for here.
+    */
+   if (writer) {
+      uint32_t writer_syncobj = agx_bo_writer_syncobj(writer);
+      do {
+         ret = drmSyncobjWait(dev->fd, &writer_syncobj, 1, INT64_MAX, 0, NULL);
+      } while (ret == -EINTR);
+      /* ENOENT/EINVAL: the writer's batch is gone or never submitted. */
+      writer = 0;
+   }
+#endif
    if (writer) {
       int out_sync_fd = -1;
       ret = drmSyncobjExportSyncFile(dev->fd, agx_bo_writer_syncobj(writer),

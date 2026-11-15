@@ -27,9 +27,21 @@
  * as orbclient's set_size does after a resize event) the window is mapped again and
  * the next frame gets buffers of the new size.
  *
+ * Sharing (EGL_ORBITAL_SHARE=1, off by default; needs a GPU daemon with scheme
+ * version 1.1, "PRIME by token"): the back buffer is exported when it is made: a
+ * buffer fd (/scheme/gpu.agx/buf/<token>) that names the same memory for any
+ * process given the token. Orbital cannot take a buffer yet, so a swap still copies
+ * into the window, but it reads the frame through the buffer fd's own mapping, the
+ * way a compositor will: the producer waits for its job, then the consumer reads
+ * (the scheme shares no fences). When the export fails (a version 1.0 daemon says
+ * EOPNOTSUPP) the surface says so once and uses the ordinary path. What a
+ * compositor will need on top: the token handed over through the window, and a
+ * second buffer so the one being shown is not the one being drawn.
+ *
  * Environment:
  *   EGL_ORBITAL_TIMING=<n>   print the average time of each part of eglSwapBuffers
  *                            to stderr every <n> frames (and when the surface goes).
+ *   EGL_ORBITAL_SHARE=1      export the back buffer and present from the buffer fd.
  */
 
 #include <errno.h>
@@ -41,6 +53,8 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/redox.h>
+#include <sys/stat.h>
+#include "redox_drm.h"
 #include "pipe/p_screen.h"
 #include "util/libdrm.h"
 #include "util/os_time.h"
@@ -60,6 +74,14 @@ struct orbital_surface {
    size_t map_size;
    int win_w, win_h;      /* size of what `map` is */
    struct dri_image *back;
+
+   /* EGL_ORBITAL_SHARE: the back buffer as another process would have it */
+   bool share, share_failed;
+   int share_fd;          /* the buffer fd, -1 when not exported */
+   const uint8_t *share_map;
+   size_t share_size;
+   uint64_t share_token;
+   uint64_t share_frames;
 
    /* EGL_ORBITAL_TIMING */
    unsigned timing_every, timing_frames;
@@ -157,6 +179,22 @@ orbital_timing_report(struct orbital_surface *o)
 }
 
 static void
+orbital_drop_back(struct orbital_surface *o)
+{
+   if (o->share_map)
+      munmap((void *)o->share_map, o->share_size);
+   o->share_map = NULL;
+   if (o->share_fd >= 0)
+      close(o->share_fd);
+   o->share_fd = -1;
+   o->share_token = 0;
+   if (o->back) {
+      dri2_destroy_image(o->back);
+      o->back = NULL;
+   }
+}
+
+static void
 orbital_free_images(struct dri2_egl_surface *dri2_surf)
 {
    struct orbital_surface *o = dri2_surf->orbital;
@@ -165,10 +203,50 @@ orbital_free_images(struct dri2_egl_surface *dri2_surf)
       dri2_destroy_image(dri2_surf->front);
       dri2_surf->front = NULL;
    }
-   if (o && o->back) {
-      dri2_destroy_image(o->back);
-      o->back = NULL;
-   }
+   if (o)
+      orbital_drop_back(o);
+}
+
+/* EGL_ORBITAL_SHARE: exports the new back buffer and maps it through its buffer fd.
+ * A failure leaves the surface on the ordinary path, for good.
+ */
+static void
+orbital_share_back(struct orbital_surface *o)
+{
+   const char *what = "exporting the back buffer";
+   struct stat st;
+   int fd = -1;
+
+   errno = 0;
+   if (!dri2_query_image(o->back, __DRI_IMAGE_ATTRIB_FD, &fd) || fd < 0)
+      goto fail;
+   o->share_fd = fd;
+
+   what = "the buffer fd's token";
+   if (redox_drm_buffer_token(fd, &o->share_token))
+      goto fail;
+   what = "the buffer fd's size";
+   if (fstat(fd, &st) || st.st_size <= 0)
+      goto fail;
+   what = "mapping the buffer fd";
+   void *map = mmap(NULL, st.st_size, PROT_READ, MAP_SHARED, fd, 0);
+   if (map == MAP_FAILED)
+      goto fail;
+   o->share_map = map;
+   o->share_size = st.st_size;
+   _eglLog(_EGL_DEBUG, "orbital: back buffer shared, %zu bytes", o->share_size);
+   return;
+
+fail:
+   fprintf(stderr,
+           "egl-orbital: EGL_ORBITAL_SHARE: %s failed (%s); presenting by the "
+           "ordinary copy\n",
+           what, errno ? strerror(errno) : "no handle");
+   o->share_failed = true;
+   if (o->share_fd >= 0)
+      close(o->share_fd);
+   o->share_fd = -1;
+   o->share_token = 0;
 }
 
 static int
@@ -212,6 +290,8 @@ orbital_image_get_buffers(struct dri_drawable *driDrawable, unsigned int format,
             __DRI_IMAGE_USE_LINEAR | __DRI_IMAGE_USE_SHARE, NULL);
          if (!o->back)
             return 0;
+         if (o->share && !o->share_failed)
+            orbital_share_back(o);
       }
       buffers->image_mask |= __DRI_IMAGE_BUFFER_BACK;
       buffers->back = o->back;
@@ -232,10 +312,7 @@ orbital_surface_resized(struct dri2_egl_surface *dri2_surf)
       return;
    dri2_surf->base.Width = o->win_w;
    dri2_surf->base.Height = o->win_h;
-   if (o->back) {
-      dri2_destroy_image(o->back);
-      o->back = NULL;
-   }
+   orbital_drop_back(o);
    if (dri2_surf->dri_drawable)
       dri_invalidate_drawable(dri2_surf->dri_drawable);
 }
@@ -277,6 +354,8 @@ orbital_create_surface(_EGLDisplay *disp, EGLint type, _EGLConfig *conf,
          goto cleanup_surface;
       }
       o->fd = (int)(intptr_t)native_window;
+      o->share_fd = -1;
+      o->share = debug_get_bool_option("EGL_ORBITAL_SHARE", false);
       o->win_w = o->win_h = -1;
       if (!orbital_window_size(o->fd, &o->win_w, &o->win_h)) {
          free(o);
@@ -335,6 +414,9 @@ orbital_destroy_surface(_EGLDisplay *disp, _EGLSurface *surf)
    if (o) {
       if (o->timing_every)
          orbital_timing_report(o);
+      if (o->share)
+         fprintf(stderr, "egl-orbital: %llu frames presented from the shared buffer\n",
+                 (unsigned long long)o->share_frames);
       orbital_unmap_window(o); /* the fd is the caller's */
       free(o);
    }
@@ -382,6 +464,13 @@ orbital_swap_buffers(_EGLDisplay *disp, _EGLSurface *surf)
                                           __DRI_IMAGE_TRANSFER_READ, &stride,
                                           &transfer);
       t3 = os_time_get_nano();
+      if (src && o->share_map && (size_t)stride * h <= o->share_size) {
+         /* The frame is finished (the map waited): read it as the consumer of
+          * the shared buffer would, through the buffer fd's mapping.
+          */
+         src = o->share_map;
+         o->share_frames++;
+      }
       if (src) {
          if (stride == o->win_w * 4 && w == o->win_w) {
             memcpy(o->map, src, (size_t)stride * h);

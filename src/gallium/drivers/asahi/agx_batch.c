@@ -1016,7 +1016,16 @@ agx_batch_submit(struct agx_context *ctx, struct agx_batch *batch,
    AGX_BATCH_FOREACH_BO(batch, entry) {
       struct agx_bo *bo = *entry;
 
+#if DETECT_OS_REDOX
+      /* Redox: a shared buffer carries no fence (no sync files, no dma-buf
+       * ioctls; the GPU daemon's scheme, section 7.6). There is nothing to wait
+       * on and nothing to stash: whoever hands the buffer on waits for its job
+       * first. A shared BO is treated as one of ours below.
+       */
+      if (0) {
+#else
       if (bo->flags & AGX_BO_SHARED) {
+#endif
          batch_debug(batch, "Waits on shared BO @ 0x%" PRIx64, bo->va->addr);
 
          /* Get a sync file fd from the buffer */

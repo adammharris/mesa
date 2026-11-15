@@ -443,16 +443,23 @@ drmFreeVersion(drmVersionPtr v)
 int
 drmGetCap(int fd, uint64_t capability, uint64_t *value)
 {
-   (void)fd;
-   /* The daemon has no GET_CAP in version 1; these two are what its syncobj calls are. */
+   /* A version 1.0 daemon has no GET_CAP; these two are what its syncobj calls are. */
    switch (capability) {
    case DRM_CAP_SYNCOBJ:
    case DRM_CAP_SYNCOBJ_TIMELINE:
       *value = 1;
       return 0;
-   default:
-      errno = EOPNOTSUPP;
-      return -1;
+   default: {
+      /* Version 1.1 (CLIENT-SCHEME.md 7.7): nr 0x0c, struct drm_get_cap. */
+      uint64_t cap[2] = {capability, 0};
+      ssize_t r = call_retry(fd, 0x0c, cap, sizeof(cap));
+      if (r < 0) {
+         errno = (int)-r;
+         return -1;
+      }
+      *value = cap[1];
+      return 0;
+   }
    }
 }
 
@@ -611,20 +618,99 @@ drmDevicesEqual(drmDevicePtr a, drmDevicePtr b)
 
 /* ---------------------------------------------- PRIME, sync files: not in v1 */
 
+/* PRIME by token (CLIENT-SCHEME.md section 7, scheme version 1.1). The daemon cannot put
+ * a descriptor into its client, so export is: call 0x2d for the object's token, then
+ * open the buffer fd "<card>/buf/<token as 16 hex digits>" here; import is: fpath of the
+ * buffer fd, the token from its last component, call 0x2e. A version 1.0 daemon answers
+ * 0x2d and 0x2e with EOPNOTSUPP, which is what these returned before.
+ */
+struct redox_drm_agx_prime {
+   uint32_t handle;
+   uint32_t flags;
+   int32_t fd;
+   uint32_t pad;
+   uint64_t token;
+   uint64_t size;
+};
+_Static_assert(sizeof(struct redox_drm_agx_prime) == 32, "agx_prime");
+
+int
+redox_drm_buffer_token(int buffer_fd, uint64_t *token)
+{
+#ifdef __redox__
+   extern ssize_t redox_fpath(int fd, void *buf, size_t count);
+   char path[256];
+   ssize_t n = redox_fpath(buffer_fd, path, sizeof(path) - 1);
+   if (n <= 0) {
+      errno = EBADF;
+      return -1;
+   }
+   path[n] = 0;
+   /* "/scheme/<name>/buf/<16 hex digits>" */
+   const char *last = strrchr(path, '/');
+   char *end;
+   if (!last || strlen(last + 1) != 16 || last - path < 4 ||
+       strncmp(last - 4, "/buf", 4)) {
+      errno = EBADF;
+      return -1;
+   }
+   *token = strtoull(last + 1, &end, 16);
+   if (*end || !*token) {
+      errno = EBADF;
+      return -1;
+   }
+   return 0;
+#else
+   (void)buffer_fd; (void)token;
+   errno = ENOSYS;
+   return -1;
+#endif
+}
+
 int
 drmPrimeHandleToFD(int fd, uint32_t handle, uint32_t flags, int *prime_fd)
 {
-   (void)fd; (void)handle; (void)flags; (void)prime_fd;
-   errno = EOPNOTSUPP;
-   return -1;
+   /* drm.h makes DRM_CLOEXEC and DRM_RDWR from O_CLOEXEC and O_RDWR, which are other
+    * numbers on Redox than on Linux; the daemon takes Linux's (0x80000, 0x2). */
+   struct redox_drm_agx_prime p = {
+      .handle = handle,
+      .flags = ((flags & DRM_CLOEXEC) ? 0x80000u : 0) |
+               ((flags & DRM_RDWR) == DRM_RDWR ? 0x2u : 0),
+      .fd = -1,
+   };
+   if (flags & ~(uint32_t)(DRM_CLOEXEC | DRM_RDWR)) {
+      errno = EINVAL;
+      return -1;
+   }
+   ssize_t r = call_retry(fd, 0x2d, &p, sizeof(p));
+   if (r < 0) {
+      errno = (int)-r;
+      return -1;
+   }
+
+   char path[320];
+   snprintf(path, sizeof(path), "%s/buf/%016llx", card_path(),
+            (unsigned long long)p.token);
+   int bfd = open(path, O_RDWR | O_CLOEXEC);
+   if (bfd < 0)
+      return -1;
+   *prime_fd = bfd;
+   return 0;
 }
 
 int
 drmPrimeFDToHandle(int fd, int prime_fd, uint32_t *handle)
 {
-   (void)fd; (void)prime_fd; (void)handle;
-   errno = EOPNOTSUPP;
-   return -1;
+   struct redox_drm_agx_prime p = {.fd = -1};
+   if (redox_drm_buffer_token(prime_fd, &p.token))
+      return -1;
+   ssize_t r = call_retry(fd, 0x2e, &p, sizeof(p));
+   if (r < 0) {
+      errno = (int)-r;
+      return -1;
+   }
+   *handle = p.handle;
+   return 0;
 }
 
 int

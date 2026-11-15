@@ -82,6 +82,11 @@ struct redox_drm_agx_version {
 /* Asks the daemon for its version record. Returns 0 or a negative errno. */
 int redox_drm_agx_version(int fd, struct redox_drm_agx_version *out);
 
+/* The token of a buffer fd (what drmPrimeHandleToFD returns here: an open
+ * "/scheme/<gpu>/buf/<token>", CLIENT-SCHEME.md section 7.3): the 64-bit name another
+ * process opens or imports the buffer object by. 0, or -1 with errno. */
+int redox_drm_buffer_token(int buffer_fd, uint64_t *token);
+
 #ifdef __cplusplus
 }
 #endif
