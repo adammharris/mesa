@@ -339,6 +339,7 @@ DRM_DRIVER_DESCRIPTOR_STUB(panthor)
 
 #ifdef GALLIUM_ASAHI
 #include "asahi/drm/asahi_drm_public.h"
+#include "virtio/virtio-gpu/drm_hw.h"
 
 static struct pipe_screen *
 pipe_asahi_create_screen(int fd, const struct pipe_screen_config *config)
@@ -349,10 +350,21 @@ pipe_asahi_create_screen(int fd, const struct pipe_screen_config *config)
    return screen ? debug_screen_wrap(screen) : NULL;
 }
 
+/* A virtio_gpu node whose DRM native context is asahi's (context type 4,
+ * VIRTGPU_DRM_CONTEXT_ASAHI): the asahi driver opens it through its vdrm path
+ * (agx_virtio_open_device).
+ */
+static bool
+pipe_asahi_probe_nctx(int fd, const struct virgl_renderer_capset_drm *caps)
+{
+   return caps->context_type == 4;
+}
+
 const driOptionDescription asahi_driconf[] = {
       #include "asahi/driinfo_asahi.h"
 };
-DRM_DRIVER_DESCRIPTOR(asahi, asahi_driconf, ARRAY_SIZE(asahi_driconf))
+DRM_DRIVER_DESCRIPTOR(asahi, asahi_driconf, ARRAY_SIZE(asahi_driconf),
+                      .probe_nctx = pipe_asahi_probe_nctx)
 
 #else
 DRM_DRIVER_DESCRIPTOR_STUB(asahi)
