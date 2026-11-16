@@ -28,6 +28,7 @@
 #include "cnd_monotonic.h"
 #include "util/os_time.h"
 #include "util/timespec.h"
+#include "util/detect_os.h"
 
 #include <assert.h>
 
@@ -124,7 +125,13 @@ u_cnd_monotonic_timedwait(struct u_cnd_monotonic *cond, mtx_t *mtx,
       return thrd_success;
    return (GetLastError() == ERROR_TIMEOUT) ? thrd_timedout : thrd_error;
 #else
-#ifdef __APPLE__
+#if DETECT_OS_REDOX
+   // relibc accepts pthread_condattr_setclock(CLOCK_MONOTONIC) but pthread_cond_timedwait
+   // still takes the deadline as CLOCK_REALTIME (a todo of relibc's), so every wait on a
+   // monotonic deadline ends at once: agx-bo-cache's idle thread spun at 100 % of a CPU.
+   // pthread_cond_clockwait takes the clock as an argument, and relibc honours it.
+   int rt = pthread_cond_clockwait(&cond->cond, mtx, CLOCK_MONOTONIC, abs_time);
+#elif defined(__APPLE__)
    // Convert to a relative wait as we can't use CLOCK_MONOTONIC deadlines on macOS.
    struct timespec now_time;
    timespec_get(&now_time, TIME_MONOTONIC);
