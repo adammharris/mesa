@@ -99,6 +99,9 @@ struct orbital_surface {
    int spare_fd;
    uint64_t spare_token;
    uint64_t present_frames;
+   /* EGL_EXT_buffer_age: swaps so far, and the swap at which `back` and `spare` were last
+    * presented (0: never: a new buffer). */
+   uint64_t swaps, back_at, spare_at;
 
    /* EGL_ORBITAL_TIMING */
    unsigned timing_every, timing_frames;
@@ -198,6 +201,7 @@ orbital_timing_report(struct orbital_surface *o)
 static void
 orbital_drop_back(struct orbital_surface *o)
 {
+   o->back_at = o->spare_at = 0;
    if (o->spare)
       dri2_destroy_image(o->spare);
    o->spare = NULL;
@@ -525,6 +529,7 @@ orbital_swap_buffers(_EGLDisplay *disp, _EGLSurface *surf)
          t4 = os_time_get_nano();
          fsync(o->fd);
          o->present_frames++;
+         o->back_at = ++o->swaps;
          /* The next frame goes into the other buffer. */
          struct dri_image *img = o->back;
          int fd = o->share_fd;
@@ -535,6 +540,9 @@ orbital_swap_buffers(_EGLDisplay *disp, _EGLSurface *surf)
          o->spare = img;
          o->spare_fd = fd;
          o->spare_token = token;
+         uint64_t at = o->back_at;
+         o->back_at = o->spare_at;
+         o->spare_at = at;
          if (dri2_surf->dri_drawable)
             dri_invalidate_drawable(dri2_surf->dri_drawable);
          goto presented;
@@ -576,6 +584,8 @@ orbital_swap_buffers(_EGLDisplay *disp, _EGLSurface *surf)
       }
       t4 = os_time_get_nano();
       fsync(o->fd);
+      /* One buffer, kept: it holds this frame at the next one. */
+      o->back_at = ++o->swaps;
    }
 presented:
    t5 = os_time_get_nano();
@@ -597,6 +607,18 @@ presented:
    }
 
    return EGL_TRUE;
+}
+
+/* EGL_EXT_buffer_age: frames since the back buffer held the current one (2 with the two
+ * buffers handed to Orbital, 1 on the copy path, 0 for a new buffer). */
+static EGLint
+orbital_query_buffer_age(_EGLDisplay *disp, _EGLSurface *surf)
+{
+   struct orbital_surface *o = dri2_egl_surface(surf)->orbital;
+   (void)disp;
+   if (!o || !o->back || !o->back_at)
+      return 0;
+   return (EGLint)(o->swaps + 1 - o->back_at);
 }
 
 static EGLBoolean
@@ -630,6 +652,7 @@ static const struct dri2_egl_display_vtbl dri2_orbital_display_vtbl = {
    .create_image = dri2_create_image_khr,
    .swap_buffers = orbital_swap_buffers,
    .query_surface = orbital_query_surface,
+   .query_buffer_age = orbital_query_buffer_age,
    .get_dri_drawable = dri2_surface_get_dri_drawable,
 };
 
@@ -757,6 +780,7 @@ dri2_initialize_orbital(_EGLDisplay *disp)
    /* Fill vtbl last to prevent accidentally calling virtual function during
     * initialization.
     */
+   disp->Extensions.EXT_buffer_age = EGL_TRUE;
    dri2_dpy->vtbl = &dri2_orbital_display_vtbl;
 
    return EGL_TRUE;
