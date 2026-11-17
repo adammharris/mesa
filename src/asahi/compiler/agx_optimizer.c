@@ -361,6 +361,16 @@ agx_optimizer_inline_imm(agx_context *ctx, agx_instr **defs, agx_instr *I)
           I->op == AGX_OPCODE_SIMD_REDUCE)
          continue;
 
+      /* Every AGX3 subgroup reduction and scan reads its operand from a
+       * register (agx3_emit_subgroup_reduce takes register sources only), so
+       * an inlined constant made the packer refuse the whole shader on G15:
+       * vello's compute pipeline has `simd_prefix #0, or` after NIR's
+       * uniform-atomic and scan lowering. Keep the constant's mov. */
+      if (ctx->key && agx_isa_is_agx3(ctx->key->dev.encoding) &&
+          (I->op == AGX_OPCODE_SIMD_REDUCE || I->op == AGX_OPCODE_QUAD_REDUCE ||
+           I->op == AGX_OPCODE_SIMD_PREFIX || I->op == AGX_OPCODE_QUAD_PREFIX))
+         continue;
+
       /* Coverage-stack address/data operands, traversal addresses, and UVB
        * allocation/descriptor and child-count operands have register forms
        * only. Keep constant materialization intact. */
